@@ -63,9 +63,11 @@ class ExportManager {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
         
-        // Write file using FileManager for better sandbox compatibility
-        guard FileManager.default.createFile(atPath: url.path, contents: jsonData, attributes: nil) else {
-            throw ExportError.writeFailed
+        // Write file using Data.write for better error handling and sandbox compatibility
+        do {
+            try jsonData.write(to: url, options: [.atomic])
+        } catch {
+            throw ExportError.writeFailed(message: error.localizedDescription)
         }
     }
     
@@ -117,9 +119,11 @@ class ExportManager {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
         
-        // Write file using FileManager for better sandbox compatibility
-        guard FileManager.default.createFile(atPath: url.path, contents: csvData, attributes: nil) else {
-            throw ExportError.writeFailed
+        // Write file using Data.write for better error handling and sandbox compatibility
+        do {
+            try csvData.write(to: url, options: [.atomic])
+        } catch {
+            throw ExportError.writeFailed(message: error.localizedDescription)
         }
     }
     
@@ -166,14 +170,14 @@ class ExportManager {
 
 enum ExportError: Error, LocalizedError {
     case encodingFailed
-    case writeFailed
+    case writeFailed(message: String)
     
     var errorDescription: String? {
         switch self {
         case .encodingFailed:
             return "Failed to encode export data"
-        case .writeFailed:
-            return "Failed to write export file"
+        case .writeFailed(let message):
+            return "Failed to write export file: \(message)"
         }
     }
 }

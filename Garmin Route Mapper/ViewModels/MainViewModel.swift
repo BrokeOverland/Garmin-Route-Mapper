@@ -107,17 +107,33 @@ class MainViewModel: ObservableObject {
         isProcessing = true
         processingProgress = 0.0
         
-        for index in 0..<videoItems.count {
-            var item = videoItems[index]
+        // Create a snapshot of items to process to avoid index issues if array is modified
+        let itemsToProcess = videoItems
+        let totalCount = itemsToProcess.count
+        
+        for (index, originalItem) in itemsToProcess.enumerated() {
+            // Find the item in the current videoItems array by ID (in case items were reordered/removed)
+            guard let currentIndex = videoItems.firstIndex(where: { $0.id == originalItem.id }) else {
+                // Item was removed, skip it
+                continue
+            }
+            
+            var item = videoItems[currentIndex]
             currentProcessingVideo = item.filename
             
             do {
                 // Update status
                 item.extractionStatus = .extracting
-                videoItems[index] = item
+                videoItems[currentIndex] = item
                 
                 // Extract GPS from video
                 try await extractGPSFromVideo(item: &item)
+                
+                // Re-verify index is still valid after async operation
+                guard let updatedIndex = videoItems.firstIndex(where: { $0.id == originalItem.id }) else {
+                    // Item was removed during processing, skip it
+                    continue
+                }
                 
                 // Process with interpolation and smoothing
                 let processedPoints = gpsProcessor.processGPSPoints(
@@ -137,10 +153,10 @@ class MainViewModel: ObservableObject {
                     showError = true
                 }
                 
-                videoItems[index] = item
+                videoItems[updatedIndex] = item
                 
                 // Update progress
-                processingProgress = Double(index + 1) / Double(videoItems.count)
+                processingProgress = Double(index + 1) / Double(totalCount)
                 
                 // Update map if this is the selected video
                 if item.id == selectedVideoItem?.id {
@@ -148,9 +164,15 @@ class MainViewModel: ObservableObject {
                 }
                 
             } catch {
+                // Re-verify index is still valid after async operation
+                guard let errorIndex = videoItems.firstIndex(where: { $0.id == originalItem.id }) else {
+                    // Item was removed during processing, skip it
+                    continue
+                }
+                
                 item.extractionStatus = .error
                 item.gpsPoints = []
-                videoItems[index] = item
+                videoItems[errorIndex] = item
                 errorMessage = "Error processing \(item.filename): \(error.localizedDescription)"
                 showError = true
             }
@@ -187,6 +209,13 @@ class MainViewModel: ObservableObject {
             (index, image)
         }
         
+        // Early return if no frames to process
+        guard !framesToProcess.isEmpty else {
+            print("No frames to process for OCR")
+            item.gpsPoints = []
+            return
+        }
+        
         print("Starting OCR processing for \(framesToProcess.count) frames...")
         
         // Extract GPS using OCR with progress tracking
@@ -197,6 +226,13 @@ class MainViewModel: ObservableObject {
         let chunkSize = max(1, framesToProcess.count / 10) // Update progress ~10 times
         for chunkStart in stride(from: 0, to: framesToProcess.count, by: chunkSize) {
             let chunkEnd = min(chunkStart + chunkSize, framesToProcess.count)
+            
+            // Safety check: ensure indices are valid
+            guard chunkStart >= 0 && chunkEnd <= framesToProcess.count && chunkStart < chunkEnd else {
+                print("Invalid chunk range: start=\(chunkStart), end=\(chunkEnd), count=\(framesToProcess.count)")
+                continue
+            }
+            
             let chunk = Array(framesToProcess[chunkStart..<chunkEnd])
             
             // Setup diagnostics callback to update UI
@@ -234,7 +270,7 @@ class MainViewModel: ObservableObject {
         let processedItems = videoItems.filter { $0.hasGPSData }
         
         guard !processedItems.isEmpty else {
-            throw ExportError.writeFailed
+            throw ExportError.writeFailed(message: "No GPS data available to export")
         }
         
         // Extract directory and base filename from the chosen URL

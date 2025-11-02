@@ -307,8 +307,15 @@ struct ContentView: View {
                 return
             }
             
+            // Also access the directory as a security-scoped resource
+            let directory = originalURL.deletingLastPathComponent()
+            let directoryAccessGranted = directory.startAccessingSecurityScopedResource()
+            
             defer {
                 originalURL.stopAccessingSecurityScopedResource()
+                if directoryAccessGranted {
+                    directory.stopAccessingSecurityScopedResource()
+                }
             }
             
             // Build the file URL
