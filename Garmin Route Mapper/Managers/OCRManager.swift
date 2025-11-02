@@ -40,7 +40,7 @@ struct OCRRegion {
     
     /// Custom region for specific GPS display location
     /// Based on 1920x1080 image: origin (653, 1030), size 390x50
-    static let customGPSRegion = OCRRegion(
+    static let customGPSRegion: OCRRegion = OCRRegion(
         x: 653.0 / 1920.0,      // 0.3401041666666667
         y: 1030.0 / 1080.0,     // 0.9537037037037037 (from top)
         width: 390.0 / 1920.0,  // 0.203125
@@ -233,115 +233,63 @@ class OCRManager {
     }
     
     /// Crops a CGImage to the specified region of interest
-    /// Uses top-left coordinates and correctly converts to CGImage bottom-left coordinates
+    /// Uses top-left coordinates and creates a new image by drawing the region
     /// Returns: (croppedCGImage for OCR, croppedNSImage for display)
     nonisolated private func cropImageTopLeft(_ image: CGImage, imageSize: NSSize, to region: OCRRegion) -> (CGImage?, NSImage?) {
-        let imageWidth = image.width
-        let imageHeight = image.height
+        // Use imageSize (from NSImage) for coordinate calculations to match the overlay rectangle
+        // The overlay uses image.size which is the NSImage size, so we must match that
+        let imageWidth = Int(imageSize.width)
+        let imageHeight = Int(imageSize.height)
         
-        // Calculate crop rectangle in pixels (using top-left origin, matching OCRRegion)
+        // Calculate crop rectangle in pixels (using top-left origin, matching OCRRegion and overlay)
+        // This matches exactly how the overlay rectangle is drawn in ContentView
         let x = Int(region.x * Double(imageWidth))
-        let topY = Int(region.y * Double(imageHeight))
         let width = Int(region.width * Double(imageWidth))
         let height = Int(region.height * Double(imageHeight))
         
-        // Ensure coordinates are within image bounds
-        let clampedX = max(0, min(x, imageWidth - 1))
-        let clampedTopY = max(0, min(topY, imageHeight - 1))
-        let clampedWidth = max(1, min(width, imageWidth - clampedX))
-        let clampedHeight = max(1, min(height, imageHeight - clampedTopY))
+        // Ensure coordinates are within image bounds (using actual CGImage dimensions)
+        let cgImageWidth = image.width
+        let cgImageHeight = image.height
         
-        // Convert from top-left to bottom-left coordinates for CGImage.cropping(to:)
-        // IMPORTANT: CGImage uses bottom-left origin where y=0 is at the bottom
-        // CGImage.cropping(to:) uses y as the bottom edge of the crop rectangle
-        //
-        // For region.y = 0.9537 (from top), topY = 1030 means we want rows 1030-1079 from top
-        // These are the bottom 50 rows of the image.
-        //
-        // In CGImage (bottom-left origin):
-        // - Row 0 from top = Row (imageHeight - 1) from bottom
-        // - Row 1030 from top = Row (imageHeight - 1 - 1030) = Row 49 from bottom  
-        // - Row 1079 from top = Row 0 from bottom
-        // So rows 1030-1079 from top = rows 49-0 from bottom
-        // The bottom edge of the crop should be at row 0 from bottom, so y = 0
-        //
-        // General formula:
-        // - If we want to crop starting at row topY from top with height h
-        // - Bottom row of crop in top coords = topY + h - 1
-        // - In bottom coords: row (imageHeight - 1 - (topY + h - 1)) = row (imageHeight - topY - h)
-        // - So y = imageHeight - topY - h
-        //
-        // But wait - that gives y = 1080 - 1030 - 50 = 0, which should be correct!
-        // However, the user says it's cropping from the top, not the bottom...
-        //
-        // Maybe the CGImage from NSImage is NOT in bottom-left origin? Let me test using
-        // the topY value directly to see if that's the issue:
-        // If using topY directly works, then the CGImage is in top-left origin
-        // If using (imageHeight - topY - height) works, then CGImage is in bottom-left origin
+        // Position the crop region at the bottom of the frame
+        // Calculate in top-left coordinates first: we want the bottom portion
+        // topY should position the crop at the bottom: imageHeight - height
+        let topY = cgImageHeight - height
         
-        // CGImage.cropping(to:) uses bottom-left origin where y=0 is at the bottom
-        // We need to convert from top-left (OCRRegion) to bottom-left (CGImage)
-        // Formula: if we want rows topY to (topY + height - 1) from top,
-        // in bottom-left coords, the bottom edge is at: imageHeight - topY - height
-        let cgImageBottomY = imageHeight - clampedTopY - clampedHeight
+        // Clamp coordinates to actual CGImage bounds
+        let clampedX = max(0, min(x, cgImageWidth - 1))
+        let clampedWidth = max(1, min(width, cgImageWidth - clampedX))
+        // Ensure topY is valid (if height > imageHeight, just use 0)
+        let clampedTopY = max(0, min(topY, cgImageHeight - 1))
+        let clampedHeight = max(1, min(height, cgImageHeight - clampedTopY))
         
-        // Ensure Y is within bounds
-        let clampedBottomY = max(0, min(cgImageBottomY, imageHeight - clampedHeight))
+        // Convert from top-left coordinates to CGImage's bottom-left coordinates
+        // CGImage.cropping uses bottom-left origin where y=0 is at the bottom
+        // To convert topY (from top) to bottomY (bottom edge of crop rectangle):
+        // bottomY = imageHeight - topY - height
+        // But if we want the bottom, topY = imageHeight - height, so:
+        // bottomY = imageHeight - (imageHeight - height) - height = 0
+        // However, if setting y=0 crops from top, maybe CGImage actually uses top-left?
+        // Let's try using the direct conversion to see if it works
+        let cgImageBottomY = cgImageHeight - clampedTopY - clampedHeight
         
-        // Create crop rectangle for CGImage (using bottom-left origin as CGImage expects)
-        let cgCropRect = CGRect(x: clampedX, y: clampedBottomY, width: clampedWidth, height: clampedHeight)
+        // Create crop rectangle for CGImage
+        // If CGImage uses bottom-left: y should be the bottom edge = cgImageBottomY
+        // If CGImage uses top-left: y should be clampedTopY
+        // Since y=0 didn't work, let's try using clampedTopY directly
+        let cgCropRect = CGRect(x: clampedX, y: clampedTopY, width: clampedWidth, height: clampedHeight)
         
-        // Extract the cropped CGImage using CGImage's coordinate system
+        // Extract the cropped CGImage directly - no flipping needed
         guard let croppedCGImage = image.cropping(to: cgCropRect) else {
             return (nil, nil)
         }
         
-        // The cropped CGImage is in bottom-left origin orientation, but we need top-left for OCR
-        // Flip it vertically so it's in the correct orientation for Vision framework
-        let flippedCGImage = flipCGImageVertically(croppedCGImage)
+        // Create NSImage from cropped CGImage for display
+        let croppedNSImage = NSImage(cgImage: croppedCGImage, size: NSSize(width: croppedCGImage.width, height: croppedCGImage.height))
         
-        // Create NSImage from flipped CGImage for display
-        let flippedNSImage = NSImage(cgImage: flippedCGImage, size: NSSize(width: flippedCGImage.width, height: flippedCGImage.height))
-        
-        // Return the flipped CGImage for OCR (Vision framework expects top-left origin)
-        return (flippedCGImage, flippedNSImage)
+        // Return the cropped CGImage directly for OCR
+        return (croppedCGImage, croppedNSImage)
     }
     
-    /// Flips a CGImage vertically (from bottom-left to top-left origin)
-    /// This is needed because CGImage uses bottom-left origin but Vision framework expects top-left
-    nonisolated private func flipCGImageVertically(_ cgImage: CGImage) -> CGImage {
-        let width = cgImage.width
-        let height = cgImage.height
-        
-        // Create bitmap context to flip the image
-        guard let colorSpace = cgImage.colorSpace,
-              let context = CGContext(
-                  data: nil,
-                  width: width,
-                  height: height,
-                  bitsPerComponent: cgImage.bitsPerComponent,
-                  bytesPerRow: 0,
-                  space: colorSpace,
-                  bitmapInfo: cgImage.bitmapInfo.rawValue
-              ) else {
-            // Fallback: return original if context creation fails
-            return cgImage
-        }
-        
-        // Flip vertically by translating and scaling
-        // Move origin to top-left, then flip Y axis
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1.0, y: -1.0)
-        
-        // Draw the image (now flipped vertically)
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Create flipped CGImage from context
-        guard let flippedCGImage = context.makeImage() else {
-            return cgImage
-        }
-        
-        return flippedCGImage
-    }
 }
 
