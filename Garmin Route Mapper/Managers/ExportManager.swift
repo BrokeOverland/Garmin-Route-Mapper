@@ -61,10 +61,12 @@ class ExportManager {
         
         // Ensure directory exists
         let directory = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
         
-        // Write file atomically
-        try jsonData.write(to: url, options: [.atomic])
+        // Write file using FileManager for better sandbox compatibility
+        guard FileManager.default.createFile(atPath: url.path, contents: jsonData, attributes: nil) else {
+            throw ExportError.writeFailed
+        }
     }
     
     /// Exports video data to CSV format with frame-by-frame details
@@ -113,10 +115,12 @@ class ExportManager {
         
         // Ensure directory exists
         let directory = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
         
-        // Write file atomically
-        try csvData.write(to: url, options: [.atomic])
+        // Write file using FileManager for better sandbox compatibility
+        guard FileManager.default.createFile(atPath: url.path, contents: csvData, attributes: nil) else {
+            throw ExportError.writeFailed
+        }
     }
     
     /// Formats a CSV row with proper escaping

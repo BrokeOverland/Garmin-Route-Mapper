@@ -297,8 +297,22 @@ struct ContentView: View {
         panel.isExtensionHidden = false
         panel.canCreateDirectories = true
         
-        if panel.runModal() == .OK, var url = panel.url {
-            // Ensure .geojson extension
+        if panel.runModal() == .OK, let originalURL = panel.url {
+            // For NSSavePanel in App Sandbox, we need to start accessing the security-scoped resource
+            // The URL from NSSavePanel is security-scoped and grants access to create files in that location
+            guard originalURL.startAccessingSecurityScopedResource() else {
+                viewModel.errorMessage = "Export failed: Could not access selected location. Please try selecting the folder again."
+                viewModel.showError = true
+                showExportDialog = false
+                return
+            }
+            
+            defer {
+                originalURL.stopAccessingSecurityScopedResource()
+            }
+            
+            // Build the file URL
+            var url = originalURL
             if url.pathExtension.isEmpty || url.pathExtension != "geojson" {
                 url = url.deletingPathExtension().appendingPathExtension("geojson")
             }
@@ -308,7 +322,8 @@ struct ContentView: View {
                 
                 // Show success alert
                 DispatchQueue.main.async {
-                    viewModel.errorMessage = "Export completed successfully:\nGeoJSON: \(url.path)\nCSV: \(url.deletingPathExtension().appendingPathExtension("csv").path)"
+                    let csvPath = url.deletingPathExtension().appendingPathExtension("csv").path
+                    viewModel.errorMessage = "Export completed successfully:\nGeoJSON: \(url.path)\nCSV: \(csvPath)"
                     viewModel.showError = true
                 }
             } catch {

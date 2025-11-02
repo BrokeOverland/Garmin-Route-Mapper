@@ -93,6 +93,10 @@ class OCRManager {
         // Use ISO 639 two-letter language code (e.g., "en") instead of locale-specific codes (e.g., "en-US")
         request.recognitionLanguages = ["en"]
         
+        // Since we've already cropped to the region of interest, analyze the entire cropped image
+        // Set regionOfInterest to full frame (normalized coordinates: x=0, y=0, width=1, height=1)
+        request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
+        
         do {
             // Run Vision framework call on a queue with explicit QoS
             // Note: Vision framework internally creates worker threads that may not have QoS specified,
@@ -166,39 +170,62 @@ class OCRManager {
     /// - "37.7749°N, 122.4194°W"
     /// - "37.7749 N, 122.4194 W"
     /// - "Lat: 37.7749 Lon: -122.4194"
+    /// Uses simplified patterns to handle OCR errors more gracefully
     nonisolated private func parseGPSCoordinates(from text: String) -> (Double, Double)? {
-        // Pattern 1: Simple decimal degrees with optional signs
-        // e.g., "37.7749, -122.4194" or "37.7749, 122.4194"
-        let simplePattern = #"(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)"#
+        // Normalize text: replace common OCR errors and normalize whitespace
+        let normalizedText = text
+            .replacingOccurrences(of: "  ", with: " ") // Multiple spaces to single
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         
-        if let match = text.range(of: simplePattern, options: .regularExpression) {
-            let matchedText = String(text[match])
-            let components = matchedText.replacingOccurrences(of: " ", with: "").split(separator: ",")
+        // Pattern 1: Simple decimal degrees with optional signs
+        // More flexible: allows numbers with or without decimals, handles spaces
+        // Matches: "37.7749, -122.4194" or "37, -122" or "37.77, 122.41"
+        let simplePattern = #"(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)"#
+        
+        if let regex = try? NSRegularExpression(pattern: simplePattern, options: []),
+           let match = regex.firstMatch(in: normalizedText, range: NSRange(normalizedText.startIndex..., in: normalizedText)) {
             
-            if components.count == 2,
-               let lat = Double(components[0]),
-               let lon = Double(components[1]) {
+            let latStr = String(normalizedText[Range(match.range(at: 1), in: normalizedText)!])
+            let lonStr = String(normalizedText[Range(match.range(at: 2), in: normalizedText)!])
+            
+            if let lat = Double(latStr), let lon = Double(lonStr) {
                 if isValidCoordinate(latitude: lat, longitude: lon) {
                     return (lat, lon)
                 }
             }
         }
         
-        // Pattern 2: Decimal degrees with N/S/E/W indicators
-        // e.g., "37.7749°N, 122.4194°W" or "37.7749 N, 122.4194 W"
-        let directionalPattern = #"(\d+\.?\d*)\s*°?\s*([NS])\s*,\s*(\d+\.?\d*)\s*°?\s*([EW])"#
+        // Pattern 2: Decimal degrees with N/S/E/W indicators (more flexible)
+        // Matches: "37.7749°N, 122.4194°W" or "37.77 N, 122.41 W" or "37N, 122W"
+        let directionalPattern = #"(\d+(?:\.\d+)?)\s*°?\s*([NS])?\s*[,\s]\s*(\d+(?:\.\d+)?)\s*°?\s*([EW])?"#
         
         if let regex = try? NSRegularExpression(pattern: directionalPattern, options: .caseInsensitive),
-           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+           let match = regex.firstMatch(in: normalizedText, range: NSRange(normalizedText.startIndex..., in: normalizedText)) {
             
-            let latStr = String(text[Range(match.range(at: 1), in: text)!])
-            let latDir = String(text[Range(match.range(at: 2), in: text)!]).uppercased()
-            let lonStr = String(text[Range(match.range(at: 3), in: text)!])
-            let lonDir = String(text[Range(match.range(at: 4), in: text)!]).uppercased()
+            let latStr = String(normalizedText[Range(match.range(at: 1), in: normalizedText)!])
+            let lonStr = String(normalizedText[Range(match.range(at: 3), in: normalizedText)!])
+            
+            var latDir = ""
+            var lonDir = ""
+            
+            if match.range(at: 2).location != NSNotFound {
+                latDir = String(normalizedText[Range(match.range(at: 2), in: normalizedText)!]).uppercased()
+            }
+            if match.range(at: 4).location != NSNotFound {
+                lonDir = String(normalizedText[Range(match.range(at: 4), in: normalizedText)!]).uppercased()
+            }
             
             if let lat = Double(latStr), let lon = Double(lonStr) {
-                let finalLat = latDir == "S" ? -lat : lat
-                let finalLon = lonDir == "W" ? -lon : lon
+                var finalLat = lat
+                var finalLon = lon
+                
+                // Apply direction indicators if present
+                if latDir == "S" {
+                    finalLat = -lat
+                }
+                if lonDir == "W" {
+                    finalLon = -lon
+                }
                 
                 if isValidCoordinate(latitude: finalLat, longitude: finalLon) {
                     return (finalLat, finalLon)
@@ -206,14 +233,15 @@ class OCRManager {
             }
         }
         
-        // Pattern 3: "Lat:" / "Lon:" prefix format
-        let latLonPattern = #"(?i)(?:lat|latitude)[:\s]+(-?\d+\.?\d*).*?(?:lon|lng|longitude)[:\s]+(-?\d+\.?\d*)"#
+        // Pattern 3: "Lat:" / "Lon:" prefix format (simplified)
+        // Matches: "Lat: 37.7749 Lon: -122.4194" or "Latitude 37.77 Longitude -122.41"
+        let latLonPattern = #"(?:lat|latitude)[:\s]+(-?\d+(?:\.\d+)?).*?(?:lon|lng|longitude)[:\s]+(-?\d+(?:\.\d+)?)"#
         
         if let regex = try? NSRegularExpression(pattern: latLonPattern, options: .caseInsensitive),
-           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+           let match = regex.firstMatch(in: normalizedText, range: NSRange(normalizedText.startIndex..., in: normalizedText)) {
             
-            let latStr = String(text[Range(match.range(at: 1), in: text)!])
-            let lonStr = String(text[Range(match.range(at: 2), in: text)!])
+            let latStr = String(normalizedText[Range(match.range(at: 1), in: normalizedText)!])
+            let lonStr = String(normalizedText[Range(match.range(at: 2), in: normalizedText)!])
             
             if let lat = Double(latStr), let lon = Double(lonStr) {
                 if isValidCoordinate(latitude: lat, longitude: lon) {
@@ -263,20 +291,8 @@ class OCRManager {
         let clampedTopY = max(0, min(topY, cgImageHeight - 1))
         let clampedHeight = max(1, min(height, cgImageHeight - clampedTopY))
         
-        // Convert from top-left coordinates to CGImage's bottom-left coordinates
-        // CGImage.cropping uses bottom-left origin where y=0 is at the bottom
-        // To convert topY (from top) to bottomY (bottom edge of crop rectangle):
-        // bottomY = imageHeight - topY - height
-        // But if we want the bottom, topY = imageHeight - height, so:
-        // bottomY = imageHeight - (imageHeight - height) - height = 0
-        // However, if setting y=0 crops from top, maybe CGImage actually uses top-left?
-        // Let's try using the direct conversion to see if it works
-        let cgImageBottomY = cgImageHeight - clampedTopY - clampedHeight
-        
         // Create crop rectangle for CGImage
-        // If CGImage uses bottom-left: y should be the bottom edge = cgImageBottomY
-        // If CGImage uses top-left: y should be clampedTopY
-        // Since y=0 didn't work, let's try using clampedTopY directly
+        // Using top-left coordinates directly (clampedTopY positions from top)
         let cgCropRect = CGRect(x: clampedX, y: clampedTopY, width: clampedWidth, height: clampedHeight)
         
         // Extract the cropped CGImage directly - no flipping needed

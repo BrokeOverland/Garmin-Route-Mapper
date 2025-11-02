@@ -56,14 +56,19 @@ struct MapView: NSViewRepresentable {
     func makeNSView(context: Context) -> MKMapView {
         let mapView = MKMapView()
         mapView.delegate = context.coordinator
+        // Store binding reference in coordinator
+        context.coordinator.regionBinding = $region
         // Defer initial region setting until view is laid out
         DispatchQueue.main.async {
             if mapView.bounds.width > 0 && mapView.bounds.height > 0 && isValidRegion(region) {
+                context.coordinator.isUpdatingFromUser = true
                 mapView.setRegion(region, animated: false)
+                context.coordinator.isUpdatingFromUser = false
             }
         }
-        mapView.isZoomEnabled = false
-        mapView.isScrollEnabled = false
+        // Enable zoom and pan interactions
+        mapView.isZoomEnabled = true
+        mapView.isScrollEnabled = true
         mapView.isRotateEnabled = false
         mapView.isPitchEnabled = false
         
@@ -71,6 +76,9 @@ struct MapView: NSViewRepresentable {
     }
     
     func updateNSView(_ mapView: MKMapView, context: Context) {
+        // Update binding reference in coordinator (in case binding changed)
+        context.coordinator.regionBinding = $region
+        
         // Check if view has valid bounds before updating
         guard mapView.bounds.width > 0 && mapView.bounds.height > 0 else {
             // Skip updates until view has valid bounds (will be called again when layout completes)
@@ -149,16 +157,20 @@ struct MapView: NSViewRepresentable {
         
         // Defer layout-triggering updates to avoid reentrant layout issues
         DispatchQueue.main.async {
-            // Update region only if changed and valid
-            if regionChanged && isValidRegion(region) {
+            // Update region only if changed and valid, and not from user interaction
+            if regionChanged && isValidRegion(region) && !context.coordinator.isUpdatingFromUser {
+                context.coordinator.isUpdatingFromUser = true
                 mapView.setRegion(region, animated: false)
+                context.coordinator.isUpdatingFromUser = false
             }
             
-            // Fit map to route after adding overlay
-            if let polyline = polyline {
+            // Fit map to route after adding overlay (only if user hasn't manually interacted)
+            if let polyline = polyline, !context.coordinator.isUpdatingFromUser, !context.coordinator.hasUserInteracted {
                 let rect = polyline.boundingMapRect
                 if rect.width > 0 && rect.height > 0 {
+                    context.coordinator.isUpdatingFromUser = true
                     mapView.setVisibleMapRect(rect, edgePadding: NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20), animated: false)
+                    context.coordinator.isUpdatingFromUser = false
                 }
             }
         }
@@ -169,6 +181,30 @@ struct MapView: NSViewRepresentable {
     }
     
     class Coordinator: NSObject, MKMapViewDelegate {
+        var regionBinding: Binding<MKCoordinateRegion>?
+        var isUpdatingFromUser = false
+        var hasUserInteracted = false // Track if user has manually panned/zoomed
+        
+        // Track when user changes the region via interaction (pan/zoom)
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            // Only update binding if change came from user interaction
+            if !isUpdatingFromUser, let binding = regionBinding {
+                hasUserInteracted = true // Mark that user has interacted
+                let newRegion = mapView.region
+                // Validate region before updating binding
+                if newRegion.center.latitude.isFinite && 
+                   newRegion.center.longitude.isFinite &&
+                   abs(newRegion.center.latitude) <= 90.0 &&
+                   abs(newRegion.center.longitude) <= 180.0 &&
+                   newRegion.span.latitudeDelta.isFinite &&
+                   newRegion.span.longitudeDelta.isFinite &&
+                   newRegion.span.latitudeDelta > 0 &&
+                   newRegion.span.longitudeDelta > 0 {
+                    binding.wrappedValue = newRegion
+                }
+            }
+        }
+        
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
