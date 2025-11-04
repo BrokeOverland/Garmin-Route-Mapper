@@ -118,16 +118,12 @@ struct ContentView: View {
                         }
                         
                         // OCR Diagnostics Window
-                        if viewModel.isProcessing || viewModel.currentOCRImage != nil {
+                        if viewModel.isProcessing || !viewModel.ocrFrameData.isEmpty {
                             Divider()
                             
-                            OCRDiagnosticsView(
-                                originalImage: viewModel.currentOCRImage,
-                                croppedImage: viewModel.croppedOCRImage,
-                                region: viewModel.currentOCRRegion
-                            )
-                            .frame(height: 200)
-                            .padding()
+                            OCRDiagnosticsView(viewModel: viewModel)
+                                .frame(height: 250)
+                                .padding()
                         }
                     }
                 }
@@ -299,7 +295,7 @@ struct ContentView: View {
         
         if panel.runModal() == .OK, let originalURL = panel.url {
             // For NSSavePanel in App Sandbox, we need to start accessing the security-scoped resource
-            // The URL from NSSavePanel is security-scoped and grants access to create files in that location
+            // The URL from NSSavePanel is security-scoped and grants access to create files in that directory
             guard originalURL.startAccessingSecurityScopedResource() else {
                 viewModel.errorMessage = "Export failed: Could not access selected location. Please try selecting the folder again."
                 viewModel.showError = true
@@ -307,10 +303,11 @@ struct ContentView: View {
                 return
             }
             
-            // Also access the directory as a security-scoped resource
+            // Also access the directory to ensure we can write multiple files
             let directory = originalURL.deletingLastPathComponent()
             let directoryAccessGranted = directory.startAccessingSecurityScopedResource()
             
+            // Defer cleanup to ensure security-scoped access is maintained during export
             defer {
                 originalURL.stopAccessingSecurityScopedResource()
                 if directoryAccessGranted {
@@ -318,12 +315,13 @@ struct ContentView: View {
                 }
             }
             
-            // Build the file URL
+            // Build the file URL after starting security-scoped access
             var url = originalURL
             if url.pathExtension.isEmpty || url.pathExtension != "geojson" {
                 url = url.deletingPathExtension().appendingPathExtension("geojson")
             }
             
+            // Perform export with security-scoped access active
             do {
                 try viewModel.exportData(to: url)
                 
@@ -423,15 +421,74 @@ struct StatusBadge: View {
 // MARK: - OCR Diagnostics View
 
 struct OCRDiagnosticsView: View {
-    let originalImage: NSImage?
-    let croppedImage: NSImage?
-    let region: OCRRegion?
+    @ObservedObject var viewModel: MainViewModel
+    
+    @State private var editedLatitude: String = ""
+    @State private var editedLongitude: String = ""
+    @State private var isEditing = false
+    @State private var frameNumberInput: String = ""
+    
+    var currentFrameData: MainViewModel.OCRFrameData? {
+        guard viewModel.currentOCRFrameIndex >= 0 && viewModel.currentOCRFrameIndex < viewModel.ocrFrameData.count else {
+            return nil
+        }
+        return viewModel.ocrFrameData[viewModel.currentOCRFrameIndex]
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("OCR Diagnostics")
-                .font(.headline)
-                .padding(.bottom, 4)
+            HStack {
+                Text("OCR Diagnostics")
+                    .font(.headline)
+                
+                Spacer()
+                
+                // Frame navigation controls
+                if !viewModel.ocrFrameData.isEmpty {
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            viewModel.previousOCRFrame()
+                            updateEditFields(resetEditing: true)
+                        }) {
+                            Image(systemName: "chevron.left")
+                        }
+                        .disabled(!viewModel.canGoToPreviousFrame)
+                        .buttonStyle(.borderless)
+                        
+                        Text("Frame")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        TextField("", text: $frameNumberInput)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 50)
+                            .font(.caption)
+                            .onSubmit {
+                                if let frameNum = Int(frameNumberInput) {
+                                    viewModel.jumpToFrame(frameNumber: frameNum)
+                                    updateEditFields(resetEditing: true)
+                                }
+                            }
+                            .onChange(of: viewModel.currentOCRFrameIndex) { _, _ in
+                                frameNumberInput = String(viewModel.currentOCRFrameIndex + 1)
+                            }
+                        
+                        Text("of \(viewModel.totalOCRFrames)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Button(action: {
+                            viewModel.nextOCRFrame()
+                            updateEditFields(resetEditing: true)
+                        }) {
+                            Image(systemName: "chevron.right")
+                        }
+                        .disabled(!viewModel.canGoToNextFrame)
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+            .padding(.bottom, 4)
             
             HStack(spacing: 16) {
                 // Original image with region overlay
@@ -440,16 +497,16 @@ struct OCRDiagnosticsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    if let image = originalImage, let region = region {
+                    if let frameData = currentFrameData {
                         ZStack {
-                            Image(nsImage: image)
+                            Image(nsImage: frameData.originalImage)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
                                 .background(Color.black)
                             
                             // Overlay region rectangle
                             GeometryReader { geometry in
-                                let imageSize = image.size
+                                let imageSize = frameData.originalImage.size
                                 let viewSize = geometry.size
                                 let scale = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
                                 let scaledImageWidth = imageSize.width * scale
@@ -460,20 +517,20 @@ struct OCRDiagnosticsView: View {
                                 Rectangle()
                                     .stroke(Color.red, lineWidth: 2)
                                     .frame(
-                                        width: CGFloat(region.width) * scaledImageWidth,
-                                        height: CGFloat(region.height) * scaledImageHeight
+                                        width: CGFloat(frameData.region.width) * scaledImageWidth,
+                                        height: CGFloat(frameData.region.height) * scaledImageHeight
                                     )
                                     .position(
-                                        x: offsetX + CGFloat(region.x) * scaledImageWidth + CGFloat(region.width) * scaledImageWidth / 2,
-                                        y: offsetY + CGFloat(region.y) * scaledImageHeight + CGFloat(region.height) * scaledImageHeight / 2
+                                        x: offsetX + CGFloat(frameData.region.x) * scaledImageWidth + CGFloat(frameData.region.width) * scaledImageWidth / 2,
+                                        y: offsetY + CGFloat(frameData.region.y) * scaledImageHeight + CGFloat(frameData.region.height) * scaledImageHeight / 2
                                     )
                             }
                         }
-                        .frame(width: 300, height: 150)
+                        .frame(width: 250, height: 140)
                     } else {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.gray.opacity(0.2))
-                            .frame(width: 300, height: 150)
+                            .frame(width: 250, height: 140)
                             .overlay(
                                 Text("No image")
                                     .font(.caption)
@@ -490,16 +547,16 @@ struct OCRDiagnosticsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    if let croppedImage = croppedImage {
-                        Image(nsImage: croppedImage)
+                    if let frameData = currentFrameData {
+                        Image(nsImage: frameData.croppedImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: 300, maxHeight: 150)
+                            .frame(maxWidth: 250, maxHeight: 140)
                             .background(Color.black)
                     } else {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.gray.opacity(0.2))
-                            .frame(width: 300, height: 150)
+                            .frame(width: 250, height: 140)
                             .overlay(
                                 Text("No cropped image")
                                     .font(.caption)
@@ -508,31 +565,122 @@ struct OCRDiagnosticsView: View {
                     }
                 }
                 
-                Spacer()
+                Divider()
                 
-                // Region info
-                if let region = region {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Region Info")
-                            .font(.caption)
+                // GPS Data and Editing
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("GPS Data")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let gpsPoint = viewModel.currentOCRFrameGPS {
+                        if gpsPoint.isValid {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Latitude: \(String(format: "%.6f", gpsPoint.latitude ?? 0))")
+                                    .font(.caption2)
+                                Text("Longitude: \(String(format: "%.6f", gpsPoint.longitude ?? 0))")
+                                    .font(.caption2)
+                                Text("Frame: \(gpsPoint.frameNumber)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        } else {
+                            Text("No valid GPS data")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Text("No GPS data")
+                            .font(.caption2)
                             .foregroundColor(.secondary)
+                    }
+                    
+                    // Edit controls
+                    if currentFrameData != nil {
+                        Button(action: {
+                            if isEditing {
+                                // Cancel editing - reset to current values
+                                isEditing = false
+                                updateEditFields(resetEditing: false)
+                            } else {
+                                // Start editing - populate fields with current values
+                                updateEditFields(resetEditing: false)
+                                isEditing = true
+                            }
+                        }) {
+                            Text(isEditing ? "Cancel" : "Edit")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
                         
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("X: \(String(format: "%.3f", region.x))")
-                                .font(.caption2)
-                            Text("Y: \(String(format: "%.3f", region.y))")
-                                .font(.caption2)
-                            Text("Width: \(String(format: "%.3f", region.width))")
-                                .font(.caption2)
-                            Text("Height: \(String(format: "%.3f", region.height))")
-                                .font(.caption2)
+                        if isEditing {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Lat:")
+                                        .font(.caption2)
+                                        .frame(width: 40, alignment: .leading)
+                                    TextField("Latitude", text: $editedLatitude)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.caption2)
+                                }
+                                
+                                HStack {
+                                    Text("Lon:")
+                                        .font(.caption2)
+                                        .frame(width: 40, alignment: .leading)
+                                    TextField("Longitude", text: $editedLongitude)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.caption2)
+                                }
+                                
+                                Button("Save") {
+                                    let lat = Double(editedLatitude)
+                                    let lon = Double(editedLongitude)
+                                    viewModel.updateCurrentFrameGPS(latitude: lat, longitude: lon)
+                                    isEditing = false
+                                    updateEditFields(resetEditing: false)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(editedLatitude.isEmpty || editedLongitude.isEmpty)
+                            }
                         }
                     }
                 }
+                
+                Spacer()
             }
         }
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
+        .onAppear {
+            updateEditFields(resetEditing: true)
+            frameNumberInput = viewModel.ocrFrameData.isEmpty ? "" : String(viewModel.currentOCRFrameIndex + 1)
+        }
+        .onChange(of: viewModel.currentOCRFrameIndex) { _, _ in
+            updateEditFields(resetEditing: true)
+            frameNumberInput = String(viewModel.currentOCRFrameIndex + 1)
+        }
+    }
+    
+    private func updateEditFields(resetEditing: Bool = true) {
+        if let gpsPoint = viewModel.currentOCRFrameGPS {
+            if let lat = gpsPoint.latitude {
+                editedLatitude = String(format: "%.6f", lat)
+            } else {
+                editedLatitude = ""
+            }
+            if let lon = gpsPoint.longitude {
+                editedLongitude = String(format: "%.6f", lon)
+            } else {
+                editedLongitude = ""
+            }
+        } else {
+            editedLatitude = ""
+            editedLongitude = ""
+        }
+        if resetEditing {
+            isEditing = false
+        }
     }
 }
 

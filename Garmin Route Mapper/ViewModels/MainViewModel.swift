@@ -8,6 +8,7 @@
 import AVFoundation
 import SwiftUI
 import Combine
+import AppKit
 
 /// Main ViewModel coordinating all components
 @MainActor
@@ -28,6 +29,18 @@ class MainViewModel: ObservableObject {
     @Published var currentOCRImage: NSImage?
     @Published var currentOCRRegion: OCRRegion?
     @Published var croppedOCRImage: NSImage?
+    
+    // OCR Frame Data for navigation
+    struct OCRFrameData {
+        let frameNumber: Int
+        let originalImage: NSImage
+        let region: OCRRegion
+        let croppedImage: NSImage
+        var gpsPoint: GPSPoint? // Mutable to allow editing
+    }
+    
+    @Published var ocrFrameData: [OCRFrameData] = []
+    @Published var currentOCRFrameIndex: Int = 0
     
     // MARK: - Managers
     
@@ -218,6 +231,12 @@ class MainViewModel: ObservableObject {
         
         print("Starting OCR processing for \(framesToProcess.count) frames...")
         
+        // Clear previous OCR frame data
+        await MainActor.run {
+            self.ocrFrameData = []
+            self.currentOCRFrameIndex = 0
+        }
+        
         // Extract GPS using OCR with progress tracking
         var ocrProgress = 0.0
         var extractedPoints: [GPSPoint] = []
@@ -235,18 +254,43 @@ class MainViewModel: ObservableObject {
             
             let chunk = Array(framesToProcess[chunkStart..<chunkEnd])
             
-            // Setup diagnostics callback to update UI
-            let diagnosticsCallback: OCRDiagnosticsCallback = { [weak self] originalImage, region, croppedImage in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.currentOCRImage = originalImage
-                    self.currentOCRRegion = region
-                    self.croppedOCRImage = croppedImage
+            // Process frames and collect frame data
+            for (frameIndex, image) in chunk {
+                let framePoint = await ocrManager.extractGPSFromImage(
+                    image,
+                    frameNumber: frameIndex,
+                    diagnosticsCallback: { [weak self] originalImage, region, croppedImage in
+                        Task { @MainActor in
+                            guard let self = self else { return }
+                            // Store frame data
+                            let frameData = OCRFrameData(
+                                frameNumber: frameIndex,
+                                originalImage: originalImage,
+                                region: region,
+                                croppedImage: croppedImage,
+                                gpsPoint: nil as GPSPoint? // Will be set after OCR processing
+                            )
+                            self.ocrFrameData.append(frameData)
+                            
+                            // Update current display if this is the first frame or we're at the end
+                            if self.ocrFrameData.count == 1 || frameIndex == chunk.last?.0 {
+                                self.currentOCRFrameIndex = self.ocrFrameData.count - 1
+                                self.updateCurrentOCRDisplay()
+                            }
+                        }
+                    }
+                )
+                extractedPoints.append(framePoint)
+                
+                // Update the stored frame data with the GPS point
+                await MainActor.run {
+                    if let dataIndex = self.ocrFrameData.firstIndex(where: { $0.frameNumber == frameIndex }) {
+                        var updatedData = self.ocrFrameData[dataIndex]
+                        updatedData.gpsPoint = framePoint
+                        self.ocrFrameData[dataIndex] = updatedData
+                    }
                 }
             }
-            
-            let chunkPoints = await ocrManager.extractGPSFromFrames(chunk, diagnosticsCallback: diagnosticsCallback)
-            extractedPoints.append(contentsOf: chunkPoints)
             
             // Update progress (OCR is 50-100% of total progress)
             ocrProgress = Double(chunkEnd) / Double(framesToProcess.count)
@@ -257,6 +301,17 @@ class MainViewModel: ObservableObject {
         
         // Sort points by frame number
         extractedPoints.sort { $0.frameNumber < $1.frameNumber }
+        
+        // Sort OCR frame data by frame number
+        await MainActor.run {
+            self.ocrFrameData.sort { $0.frameNumber < $1.frameNumber }
+            
+            // Set current frame to first frame if available
+            if !self.ocrFrameData.isEmpty {
+                self.currentOCRFrameIndex = 0
+                self.updateCurrentOCRDisplay()
+            }
+        }
         
         print("OCR complete. Found \(extractedPoints.filter { $0.isValid }.count) valid GPS points")
         
@@ -328,6 +383,125 @@ class MainViewModel: ObservableObject {
             selectedVideoItem = updatedItem
             mapViewModel.updateRoute(from: processedPoints)
         }
+    }
+    
+    // MARK: - OCR Frame Navigation
+    
+    /// Navigates to the previous OCR frame
+    func previousOCRFrame() {
+        guard !ocrFrameData.isEmpty else { return }
+        currentOCRFrameIndex = max(0, currentOCRFrameIndex - 1)
+        updateCurrentOCRDisplay()
+    }
+    
+    /// Navigates to the next OCR frame
+    func nextOCRFrame() {
+        guard !ocrFrameData.isEmpty else { return }
+        currentOCRFrameIndex = min(ocrFrameData.count - 1, currentOCRFrameIndex + 1)
+        updateCurrentOCRDisplay()
+    }
+    
+    /// Jumps to a specific frame by frame number (1-based index)
+    func jumpToFrame(frameNumber: Int) {
+        guard !ocrFrameData.isEmpty else { return }
+        let targetIndex = max(0, min(ocrFrameData.count - 1, frameNumber - 1))
+        currentOCRFrameIndex = targetIndex
+        updateCurrentOCRDisplay()
+    }
+    
+    /// Jumps to a specific frame by index (0-based)
+    func jumpToFrameIndex(_ index: Int) {
+        guard !ocrFrameData.isEmpty else { return }
+        let targetIndex = max(0, min(ocrFrameData.count - 1, index))
+        currentOCRFrameIndex = targetIndex
+        updateCurrentOCRDisplay()
+    }
+    
+    /// Updates the current OCR display from the frame data array
+    private func updateCurrentOCRDisplay() {
+        guard currentOCRFrameIndex >= 0 && currentOCRFrameIndex < ocrFrameData.count else {
+            currentOCRImage = nil
+            currentOCRRegion = nil
+            croppedOCRImage = nil
+            return
+        }
+        
+        let frameData = ocrFrameData[currentOCRFrameIndex]
+        currentOCRImage = frameData.originalImage
+        currentOCRRegion = frameData.region
+        croppedOCRImage = frameData.croppedImage
+    }
+    
+    /// Updates GPS data for the current OCR frame
+    func updateCurrentFrameGPS(latitude: Double?, longitude: Double?) {
+        guard currentOCRFrameIndex >= 0 && currentOCRFrameIndex < ocrFrameData.count else { return }
+        
+        // Create new GPS point
+        let frameNumber = ocrFrameData[currentOCRFrameIndex].frameNumber
+        let newGPSPoint = GPSPoint(
+            frameNumber: frameNumber,
+            latitude: latitude,
+            longitude: longitude,
+            extractionMethod: .ocr
+        )
+        
+        // Update frame data
+        var updatedFrameData = ocrFrameData[currentOCRFrameIndex]
+        updatedFrameData.gpsPoint = newGPSPoint
+        ocrFrameData[currentOCRFrameIndex] = updatedFrameData
+        
+        // Update the corresponding GPS point in the selected video item
+        if let item = selectedVideoItem,
+           let itemIndex = videoItems.firstIndex(where: { $0.id == item.id }) {
+            var updatedItem = videoItems[itemIndex]
+            
+            // Find and update the GPS point with matching frame number
+            if let gpsIndex = updatedItem.gpsPoints.firstIndex(where: { $0.frameNumber == frameNumber }) {
+                updatedItem.gpsPoints[gpsIndex] = newGPSPoint
+            } else {
+                // If frame doesn't exist, add it
+                updatedItem.gpsPoints.append(newGPSPoint)
+                updatedItem.gpsPoints.sort { $0.frameNumber < $1.frameNumber }
+            }
+            
+            videoItems[itemIndex] = updatedItem
+            selectedVideoItem = updatedItem
+            
+            // Reprocess with interpolation and smoothing
+            let processedPoints = gpsProcessor.processGPSPoints(
+                updatedItem.gpsPoints,
+                interpolate: true,
+                smooth: isSmoothingEnabled,
+                smoothingWindow: smoothingWindow
+            )
+            updatedItem.gpsPoints = processedPoints
+            videoItems[itemIndex] = updatedItem
+            selectedVideoItem = updatedItem
+            mapViewModel.updateRoute(from: processedPoints)
+        }
+    }
+    
+    /// Gets the current OCR frame's GPS data
+    var currentOCRFrameGPS: GPSPoint? {
+        guard currentOCRFrameIndex >= 0 && currentOCRFrameIndex < ocrFrameData.count else {
+            return nil
+        }
+        return ocrFrameData[currentOCRFrameIndex].gpsPoint
+    }
+    
+    /// Gets the total number of OCR frames
+    var totalOCRFrames: Int {
+        return ocrFrameData.count
+    }
+    
+    /// Checks if there's a previous frame
+    var canGoToPreviousFrame: Bool {
+        return currentOCRFrameIndex > 0 && !ocrFrameData.isEmpty
+    }
+    
+    /// Checks if there's a next frame
+    var canGoToNextFrame: Bool {
+        return currentOCRFrameIndex < ocrFrameData.count - 1 && !ocrFrameData.isEmpty
     }
 }
 
