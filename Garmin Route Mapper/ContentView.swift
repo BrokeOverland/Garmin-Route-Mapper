@@ -68,62 +68,117 @@ struct ContentView: View {
                         
                         Divider()
                         
-                        // Video list
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 8) {
-                                ForEach(viewModel.videoItems) { item in
-                                    VideoListItemView(
-                                        item: item,
-                                        isSelected: viewModel.selectedVideoItem?.id == item.id,
-                                        onSelect: {
-                                            viewModel.selectVideo(item)
-                                        },
-                                        onRemove: {
-                                            viewModel.removeVideo(item)
+                        // Video list and diagnostics in a split view
+                        if viewModel.isProcessing || !viewModel.ocrFrameData.isEmpty {
+                            VSplitView {
+                                VStack(spacing: 0) {
+                                    // Video list
+                                    ScrollView {
+                                        LazyVStack(alignment: .leading, spacing: 8) {
+                                            ForEach(viewModel.videoItems) { item in
+                                                VideoListItemView(
+                                                    item: item,
+                                                    isSelected: viewModel.selectedVideoItem?.id == item.id,
+                                                    onSelect: {
+                                                        viewModel.selectVideo(item)
+                                                    },
+                                                    onRemove: {
+                                                        viewModel.removeVideo(item)
+                                                    }
+                                                )
+                                            }
                                         }
-                                    )
-                                }
-                            }
-                            .padding()
-                        }
-                        
-                        // Processing progress
-                        if viewModel.isProcessing {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Divider()
-                                
-                                HStack {
-                                    ProgressView()
-                                        .progressViewStyle(.circular)
-                                        .frame(width: 16, height: 16)
+                                        .padding()
+                                    }
                                     
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        if let current = viewModel.currentProcessingVideo {
-                                            Text("Processing: \(current)")
-                                                .font(.caption)
-                                                .lineLimit(1)
+                                    // Processing progress
+                                    if viewModel.isProcessing {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Divider()
+                                            
+                                            HStack {
+                                                ProgressView()
+                                                    .progressViewStyle(.circular)
+                                                    .frame(width: 16, height: 16)
+                                                
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    if let current = viewModel.currentProcessingVideo {
+                                                        Text("Processing: \(current)")
+                                                            .font(.caption)
+                                                            .lineLimit(1)
+                                                    }
+                                                    
+                                                    ProgressView(value: viewModel.processingProgress)
+                                                        .progressViewStyle(.linear)
+                                                    
+                                                    Text("\(Int(viewModel.processingProgress * 100))%")
+                                                        .font(.caption2)
+                                                        .foregroundColor(.secondary)
+                                                }
+                                            }
+                                            .padding(.horizontal)
+                                            .padding(.bottom, 8)
                                         }
-                                        
-                                        ProgressView(value: viewModel.processingProgress)
-                                            .progressViewStyle(.linear)
-                                        
-                                        Text("\(Int(viewModel.processingProgress * 100))%")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
                                     }
                                 }
-                                .padding(.horizontal)
-                                .padding(.bottom, 8)
+                                .frame(minHeight: 200)
+                                
+                                // OCR Diagnostics Window
+                                OCRDiagnosticsView(viewModel: viewModel)
+                                    .frame(minHeight: 250)
+                                    .padding()
                             }
-                        }
-                        
-                        // OCR Diagnostics Window
-                        if viewModel.isProcessing || !viewModel.ocrFrameData.isEmpty {
-                            Divider()
-                            
-                            OCRDiagnosticsView(viewModel: viewModel)
-                                .frame(height: 250)
-                                .padding()
+                        } else {
+                            VStack(spacing: 0) {
+                                // Video list
+                                ScrollView {
+                                    LazyVStack(alignment: .leading, spacing: 8) {
+                                        ForEach(viewModel.videoItems) { item in
+                                            VideoListItemView(
+                                                item: item,
+                                                isSelected: viewModel.selectedVideoItem?.id == item.id,
+                                                onSelect: {
+                                                    viewModel.selectVideo(item)
+                                                },
+                                                onRemove: {
+                                                    viewModel.removeVideo(item)
+                                                }
+                                            )
+                                        }
+                                    }
+                                    .padding()
+                                }
+                                
+                                // Processing progress
+                                if viewModel.isProcessing {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Divider()
+                                        
+                                        HStack {
+                                            ProgressView()
+                                                .progressViewStyle(.circular)
+                                                .frame(width: 16, height: 16)
+                                            
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                if let current = viewModel.currentProcessingVideo {
+                                                    Text("Processing: \(current)")
+                                                        .font(.caption)
+                                                        .lineLimit(1)
+                                                }
+                                                
+                                                ProgressView(value: viewModel.processingProgress)
+                                                    .progressViewStyle(.linear)
+                                                
+                                                Text("\(Int(viewModel.processingProgress * 100))%")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        .padding(.horizontal)
+                                        .padding(.bottom, 8)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
