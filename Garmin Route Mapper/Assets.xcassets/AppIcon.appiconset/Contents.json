@@ -1,18 +1,19 @@
 {
   "images" : [
     {
+      "filename" : "icon16.jpeg",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "16x16"
     },
     {
-      "filename" : "icon32 1.jpeg",
+      "filename" : "icon32.jpeg",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "16x16"
     },
     {
-      "filename" : "icon32.jpeg",
+      "filename" : "icon32 1.jpeg",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "32x32"
@@ -48,11 +49,13 @@
       "size" : "256x256"
     },
     {
+      "filename" : "icon512 1.jpg",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "512x512"
     },
     {
+      "filename" : "icon1024.jpg",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "512x512"
