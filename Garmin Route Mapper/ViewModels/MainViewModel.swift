@@ -503,5 +503,116 @@ class MainViewModel: ObservableObject {
     var canGoToNextFrame: Bool {
         return currentOCRFrameIndex < ocrFrameData.count - 1 && !ocrFrameData.isEmpty
     }
+    
+    // MARK: - Flagged Frames
+    
+    /// Represents a flagged frame with reason for flagging
+    struct FlaggedFrame: Identifiable {
+        let id: Int // frame number
+        let frameNumber: Int
+        let reason: FlagReason
+        
+        enum FlagReason: String {
+            case noGPSData = "No GPS data"
+            case zeroLatitude = "Latitude is zero"
+            case zeroLongitude = "Longitude is zero"
+            case bothZero = "Both coordinates are zero"
+            case tooFarFromPrevious = "Too far from previous frame"
+        }
+    }
+    
+    /// Gets all flagged frames (frames with no GPS data or zero coordinates)
+    var flaggedFrames: [FlaggedFrame] {
+        var flagged: [FlaggedFrame] = []
+        
+        for frameData in ocrFrameData {
+            guard let gpsPoint = frameData.gpsPoint else {
+                // No GPS data
+                flagged.append(FlaggedFrame(
+                    id: frameData.frameNumber,
+                    frameNumber: frameData.frameNumber,
+                    reason: .noGPSData
+                ))
+                continue
+            }
+            
+            // Check if coordinates are all zeros after decimal
+            let latIsZero = gpsPoint.latitude.map { abs($0) < 0.000001 } ?? true
+            let lonIsZero = gpsPoint.longitude.map { abs($0) < 0.000001 } ?? true
+            
+            if latIsZero && lonIsZero {
+                flagged.append(FlaggedFrame(
+                    id: frameData.frameNumber,
+                    frameNumber: frameData.frameNumber,
+                    reason: .bothZero
+                ))
+            } else if latIsZero {
+                flagged.append(FlaggedFrame(
+                    id: frameData.frameNumber,
+                    frameNumber: frameData.frameNumber,
+                    reason: .zeroLatitude
+                ))
+            } else if lonIsZero {
+                flagged.append(FlaggedFrame(
+                    id: frameData.frameNumber,
+                    frameNumber: frameData.frameNumber,
+                    reason: .zeroLongitude
+                ))
+            }
+        }
+        
+        // Check for frames too far from previous frame (starting from index 1)
+        // Need at least 2 frames to compare
+        guard ocrFrameData.count > 1 else {
+            return flagged
+        }
+        
+        // Compare each frame with the previous frame in the array
+        // Since array is sorted by frame number, consecutive frames should be adjacent
+        for index in 1..<ocrFrameData.count {
+            let currentFrameData = ocrFrameData[index]
+            let previousFrameData = ocrFrameData[index - 1]
+            
+            // Check if both frames are consecutive frame numbers (differ by 1)
+            // This ensures we're comparing actual consecutive frames
+            let frameNumberDiff = currentFrameData.frameNumber - previousFrameData.frameNumber
+            guard frameNumberDiff == 1 else {
+                // Not consecutive frames, skip comparison
+                continue
+            }
+            
+            // Check if both frames have valid GPS data
+            guard let currentGPS = currentFrameData.gpsPoint,
+                  let currentLat = currentGPS.latitude,
+                  let currentLon = currentGPS.longitude,
+                  currentGPS.isValid,
+                  let previousGPS = previousFrameData.gpsPoint,
+                  let previousLat = previousGPS.latitude,
+                  let previousLon = previousGPS.longitude,
+                  previousGPS.isValid else {
+                // Skip comparison if either frame has invalid/missing GPS data
+                continue
+            }
+            
+            // Calculate coordinate differences
+            let latDiff = abs(currentLat - previousLat)
+            let lonDiff = abs(currentLon - previousLon)
+            
+            // Flag if difference exceeds threshold (0.009 degrees ≈ 1 km at the equator)
+            if latDiff > 0.009 || lonDiff > 0.009 {
+                // Only add if not already flagged (to avoid duplicates)
+                if !flagged.contains(where: { $0.frameNumber == currentFrameData.frameNumber }) {
+                    flagged.append(FlaggedFrame(
+                        id: currentFrameData.frameNumber,
+                        frameNumber: currentFrameData.frameNumber,
+                        reason: .tooFarFromPrevious
+                    ))
+                }
+            }
+        }
+        
+        // Sort flagged frames by frame number
+        return flagged.sorted { $0.frameNumber < $1.frameNumber }
+    }
 }
 

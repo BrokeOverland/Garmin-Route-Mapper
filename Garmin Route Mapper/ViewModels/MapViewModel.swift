@@ -119,19 +119,136 @@ class MapViewModel: ObservableObject {
         videoDuration: Double,
         gpsPoints: [GPSPoint]
     ) {
-        guard videoDuration > 0 else { return }
+        guard videoDuration > 0, !gpsPoints.isEmpty else { return }
         
-        let progress = videoTime / videoDuration
-        let frameIndex = Int(progress * Double(max(gpsPoints.count - 1, 0)))
-        let clampedIndex = min(max(frameIndex, 0), gpsPoints.count - 1)
+        // Calculate frame number from video time (frames extracted at 30 FPS)
+        // Frame number corresponds to the frame index used during extraction
+        let frameRate: Double = 30.0 // Frames per second (matches VideoManager.extractFrames)
+        let currentFrameNumber = Int(videoTime * frameRate)
         
-        if clampedIndex < gpsPoints.count {
-            let point = gpsPoints[clampedIndex]
-            if point.isValid, let lat = point.latitude, let lon = point.longitude {
-                currentPosition = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        // GPS points are sorted by frameNumber, so we can use binary search
+        var matchingPoint: GPSPoint?
+        var closestValidIndex: Int?
+        var minDistance = Int.max
+        
+        // Binary search for exact match or closest valid point
+        var left = 0
+        var right = gpsPoints.count - 1
+        
+        while left <= right {
+            let mid = (left + right) / 2
+            let midFrameNumber = gpsPoints[mid].frameNumber
+            let midPoint = gpsPoints[mid]
+            
+            // Always track closest valid point as we search
+            if midPoint.isValid {
+                let distance: Int
+                if midFrameNumber < currentFrameNumber {
+                    distance = currentFrameNumber - midFrameNumber
+                } else if midFrameNumber > currentFrameNumber {
+                    distance = midFrameNumber - currentFrameNumber
+                } else {
+                    distance = 0 // Exact match
+                }
                 
-                // The view will update the displayed route based on currentPosition
+                if distance < minDistance {
+                    minDistance = distance
+                    closestValidIndex = mid
+                }
             }
+            
+            if midFrameNumber == currentFrameNumber {
+                // Exact match found - check if valid before breaking
+                if midPoint.isValid {
+                    matchingPoint = midPoint
+                    break
+                }
+                // Exact match but invalid - search adjacent points linearly for closest valid point
+                // Since we're at the exact frame number, the closest valid point must be nearby
+                var bestIndex: Int?
+                var bestDistance = Int.max
+                
+                // Search forward and backward from exact match simultaneously
+                var forwardIndex = mid + 1
+                var backwardIndex = mid - 1
+                var forwardExhausted = false
+                var backwardExhausted = false
+                
+                // Search both directions, stopping each direction when it moves beyond best distance
+                while !forwardExhausted || !backwardExhausted {
+                    // Check forward
+                    if !forwardExhausted && forwardIndex < gpsPoints.count {
+                        let forwardPoint = gpsPoints[forwardIndex]
+                        let forwardDistance = forwardPoint.frameNumber - currentFrameNumber
+                        
+                        if forwardPoint.isValid {
+                            if bestIndex == nil || forwardDistance < bestDistance {
+                                bestDistance = forwardDistance
+                                bestIndex = forwardIndex
+                            }
+                        }
+                        
+                        // Stop searching forward if we've moved beyond the best distance
+                        if bestIndex != nil && forwardDistance > bestDistance {
+                            forwardExhausted = true
+                        } else {
+                            forwardIndex += 1
+                        }
+                    } else {
+                        forwardExhausted = true
+                    }
+                    
+                    // Check backward
+                    if !backwardExhausted && backwardIndex >= 0 {
+                        let backwardPoint = gpsPoints[backwardIndex]
+                        let backwardDistance = currentFrameNumber - backwardPoint.frameNumber
+                        
+                        if backwardPoint.isValid {
+                            if bestIndex == nil || backwardDistance < bestDistance {
+                                bestDistance = backwardDistance
+                                bestIndex = backwardIndex
+                            }
+                        }
+                        
+                        // Stop searching backward if we've moved beyond the best distance
+                        if bestIndex != nil && backwardDistance > bestDistance {
+                            backwardExhausted = true
+                        } else {
+                            backwardIndex -= 1
+                        }
+                    } else {
+                        backwardExhausted = true
+                    }
+                }
+                
+                // Use the closest valid point found, or fall back to closestValidIndex from binary search
+                if let best = bestIndex {
+                    matchingPoint = gpsPoints[best]
+                }
+                break // Found exact match location, done searching
+            } else if midFrameNumber < currentFrameNumber {
+                left = mid + 1
+            } else {
+                right = mid - 1
+            }
+        }
+        
+        // If exact match found but invalid, or no exact match, use closest valid point
+        if matchingPoint == nil || !(matchingPoint?.isValid ?? false) {
+            if let closestIndex = closestValidIndex {
+                matchingPoint = gpsPoints[closestIndex]
+            } else {
+                // Fallback: find any valid point
+                matchingPoint = gpsPoints.first(where: { $0.isValid })
+            }
+        }
+        
+        // Update current position if we found a valid point
+        if let point = matchingPoint, point.isValid,
+           let lat = point.latitude, let lon = point.longitude {
+            currentPosition = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        } else {
+            currentPosition = nil
         }
     }
     

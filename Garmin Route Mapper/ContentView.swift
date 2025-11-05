@@ -649,6 +649,61 @@ struct OCRDiagnosticsView: View {
                 
                 Spacer()
             }
+            
+            // Flagged frames list
+            if !viewModel.flaggedFrames.isEmpty {
+                Divider()
+                    .padding(.vertical, 4)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Flagged Frames (\(viewModel.flaggedFrames.count))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                    }
+                    
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(viewModel.flaggedFrames) { flaggedFrame in
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                        .font(.caption2)
+                                    
+                                    Text("Frame \(flaggedFrame.frameNumber)")
+                                        .font(.caption2)
+                                    
+                                    Spacer()
+                                    
+                                    Text(flaggedFrame.reason.rawValue)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    viewModel.currentOCRFrameIndex >= 0 &&
+                                    viewModel.currentOCRFrameIndex < viewModel.ocrFrameData.count &&
+                                    viewModel.ocrFrameData[viewModel.currentOCRFrameIndex].frameNumber == flaggedFrame.frameNumber
+                                    ? Color.accentColor.opacity(0.2) : Color.clear
+                                )
+                                .cornerRadius(4)
+                                .onTapGesture {
+                                    // Jump to the flagged frame by finding its index
+                                    if let index = viewModel.ocrFrameData.firstIndex(where: { $0.frameNumber == flaggedFrame.frameNumber }) {
+                                        viewModel.jumpToFrameIndex(index)
+                                        updateEditFields(resetEditing: true)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 100)
+                }
+            }
         }
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
