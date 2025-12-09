@@ -1,0 +1,72 @@
+name: 🐛 Bug Report
+description: Report an unexpected error or incorrect behavior.
+title: "[Bug]: <A clear and concise description of the bug>"
+labels: ["bug", "needs-triage"]
+assignees: 
+  - # Optional: list default assignees
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill out the sections below.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Current Behavior
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what you see!
+      value: "A bug happened!"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      description: What version of our software are you running?
+      options:
+        - 1.0.0
+        - 0.9.1
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        e.g., OS, Browser, Node version, etc.
+        If applicable, provide relevant log output.
+      render: shell # Renders the input as a code block for logs/console output
+
+  - type: checkboxes
+    id: agreement
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://example.com/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
